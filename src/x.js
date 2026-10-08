@@ -1,4 +1,5 @@
 import { fetchMedia, SUPPORTED_MEDIA_TYPES } from './media.js';
+import { logEvent } from './log.js';
 
 const RETRYABLE_CODES = new Set([
   'ECONNRESET',
@@ -136,11 +137,25 @@ export function createPublisher({
       const unit = units[unitIndex] || {};
       if (state.published[unitIndex]) {
         previousId = String(state.published[unitIndex]);
+        logEvent(logger, 'x_publish_already_completed', {
+          noteId: plan?.noteId ?? null,
+          unitIndex,
+          text: String(unit.text ?? ''),
+          tweetId: previousId,
+        });
         continue;
       }
 
       const mediaIds = [];
       const files = Array.isArray(unit.files) ? unit.files : [];
+      const replyTo = unit.replyTo ?? previousId;
+      logEvent(logger, 'x_publish_started', {
+        noteId: plan?.noteId ?? null,
+        unitIndex,
+        text: String(unit.text ?? ''),
+        mediaCount: files.length,
+        replyTo: replyTo ? String(replyTo) : null,
+      });
       for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
         const file = files[fileIndex];
         const declaredType = String(file?.type || file?.mimeType || '').toLowerCase().split(';', 1)[0];
@@ -152,6 +167,13 @@ export function createPublisher({
         if (existing?.skipped) continue;
         let id = typeof existing === 'string' ? existing : existing?.id;
         if (!id) {
+          logEvent(logger, 'x_media_upload_started', {
+            noteId: plan?.noteId ?? null,
+            unitIndex,
+            fileIndex,
+            mediaKey: key,
+            mediaType: declaredType || null,
+          });
           try {
             id = await upload(file);
           } catch (error) {
@@ -160,7 +182,13 @@ export function createPublisher({
             if (error.mediaSkip) {
               state.media[key] = { skipped: true, error: String(error.message || error).slice(0, 500) };
               if (typeof saveState === 'function') await saveState(state);
-              logger.warn?.(`Skipping Misskey media ${key}: ${error.message}`);
+              logEvent(logger, 'x_media_skipped', {
+                noteId: plan?.noteId ?? null,
+                unitIndex,
+                fileIndex,
+                mediaKey: key,
+                message: String(error.message || error),
+              }, 'warn');
               continue;
             }
             throw wrapError(error);
@@ -168,12 +196,18 @@ export function createPublisher({
         }
         state.media[key] = id;
         mediaIds.push({ id });
+        logEvent(logger, 'x_media_uploaded', {
+          noteId: plan?.noteId ?? null,
+          unitIndex,
+          fileIndex,
+          mediaKey: key,
+          mediaId: id,
+        });
         if (typeof saveState === 'function') await saveState(state);
       }
 
       const options = { text: String(unit.text ?? '') };
       if (mediaIds.length) options.media = mediaIds;
-      const replyTo = unit.replyTo ?? previousId;
       if (replyTo) options.replyTo = String(replyTo);
       let result;
       try {
@@ -185,6 +219,14 @@ export function createPublisher({
       if (!id) throw new RettiwtError('Rettiwt returned no tweet ID', { retryable: true });
       state.published[unitIndex] = id;
       previousId = id;
+      logEvent(logger, 'x_publish_completed', {
+        noteId: plan?.noteId ?? null,
+        unitIndex,
+        text: options.text,
+        mediaCount: mediaIds.length,
+        replyTo: replyTo ? String(replyTo) : null,
+        tweetId: id,
+      });
       if (typeof saveState === 'function') await saveState(state);
     }
     return state;

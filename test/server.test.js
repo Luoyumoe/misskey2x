@@ -21,6 +21,8 @@ function request(server, path, { method = 'GET', headers = {}, body } = {}) {
 test('HTTP webhook authenticates, queues, deduplicates and exposes status', async () => {
   const store = createStore(':memory:');
   const published = [];
+  const logs = [];
+  const logger = { info(line) { logs.push(JSON.parse(line)); }, error(line) { logs.push(JSON.parse(line)); } };
   const publisher = {
     async publishPlan(plan, state) {
       for (let index = 0; index < plan.units.length; index += 1) {
@@ -34,7 +36,7 @@ test('HTTP webhook authenticates, queues, deduplicates and exposes status', asyn
     env: { MISSKEY_WEBHOOK_SECRET: 'shared-secret', REQUIRED_TAG: 'to_x' },
     store,
     publisher,
-    logger: { info() {}, error() {} },
+    logger,
     queueIntervalMs: 60_000,
   });
   const server = http.createServer(service.handler);
@@ -67,6 +69,13 @@ test('HTTP webhook authenticates, queues, deduplicates and exposes status', asyn
     assert.equal(JSON.parse(status.body).status, 'completed');
     assert.equal(JSON.parse(status.body).published[0], 'tweet-1');
     assert.deepEqual(published, ['hello']);
+    assert.deepEqual(
+      logs.filter((entry) => entry.event).map((entry) => entry.event),
+      ['webhook_received', 'webhook_queued', 'forward_started', 'forward_completed', 'webhook_received', 'webhook_duplicate'],
+    );
+    assert.equal(logs.find((entry) => entry.event === 'webhook_received').text, 'hello #to_x');
+    assert.equal(logs.find((entry) => entry.event === 'forward_started').text, 'hello');
+    assert.deepEqual(logs.find((entry) => entry.event === 'forward_completed').published, { 0: 'tweet-1' });
   } finally {
     server.close();
     await service.stop();

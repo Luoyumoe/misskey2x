@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
-    "check": "node --check src/db.js && node --check src/media.js && node --check src/misskey.js && node --check src/server.js && node --check src/x.js"
+    "check": "node --check src/db.js && node --check src/log.js && node --check src/media.js && node --check src/misskey.js && node --check src/server.js && node --check src/x.js"
   },
   "dependencies": {
     "rettiwt-api": "7.1.4"

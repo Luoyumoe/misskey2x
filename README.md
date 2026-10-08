@@ -53,6 +53,12 @@ curl http://127.0.0.1:3000/healthz
 docker compose logs -f app
 ```
 
+服务输出单行 JSON 日志，包含接收时间、事件、Misskey note ID、原始正文和发送到 X 的正文。常见事件包括 `webhook_received`、`webhook_queued`、`x_publish_started`、`x_publish_completed`、`forward_completed`、`forward_retry_scheduled` 和 `forward_failed`。只看转发事件：
+
+```bash
+docker compose logs -f --no-log-prefix app | jq -c 'select(.event | test("webhook|publish|forward"))'
+```
+
 不要执行 `docker compose down -v`，否则会删除 SQLite 数据卷。
 
 ## Misskey Webhook

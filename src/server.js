@@ -7,6 +7,7 @@ import {
   buildSyncPlan,
   decideWebhook,
 } from './misskey.js';
+import { logEvent } from './log.js';
 import { createPublisher, isRetryableError } from './x.js';
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -130,9 +131,38 @@ function normalizeStatus(row) {
 }
 
 function createLogger(logger = console) {
+  const call = (level) => (...args) => (logger[level] || logger.info || logger.log || (() => {}))(...args);
   return {
-    info: (...args) => (logger.info || logger.log || (() => {}))(...args),
-    error: (...args) => (logger.error || logger.log || (() => {}))(...args),
+    info: call('info'),
+    warn: call('warn'),
+    error: call('error'),
+  };
+}
+
+function noteLogFields(note) {
+  if (!note || typeof note !== 'object') return { noteId: null, text: null, cw: null, media: [] };
+  return {
+    noteId: typeof note.id === 'string' ? note.id : null,
+    text: typeof note.text === 'string' ? note.text : '',
+    cw: typeof note.cw === 'string' ? note.cw : null,
+    media: Array.isArray(note.files)
+      ? note.files.map((file) => ({
+        id: file?.id ?? file?.name ?? null,
+        type: file?.type ?? file?.mimeType ?? null,
+      }))
+      : [],
+  };
+}
+
+function planLogFields(plan) {
+  return {
+    text: typeof plan?.text === 'string' ? plan.text : '',
+    units: Array.isArray(plan?.units)
+      ? plan.units.map((unit) => ({
+        text: typeof unit?.text === 'string' ? unit.text : '',
+        mediaCount: Array.isArray(unit?.files) ? unit.files.length : 0,
+      }))
+      : [],
   };
 }
 
@@ -164,6 +194,7 @@ export function createService({
     apiKey: env.API_KEY,
     logging: String(env.RETTIWT_LOGGING || '').toLowerCase() === 'true',
     mediaAllowedHosts: env.MEDIA_ALLOWED_HOSTS,
+    logger: log,
   });
 
   let timer = null;
@@ -188,33 +219,52 @@ export function createService({
         }
       }
 
+      logEvent(log, 'forward_started', {
+        ...noteLogFields(note),
+        ...planLogFields(plan),
+        attempts: Number(job.attempts || 1),
+      });
+
       const finalState = await xPublisher.publishPlan(plan, state, async (nextState) => {
         await jobStore.saveState(job.id, nextState);
       });
       await jobStore.markCompleted(job.id, finalState || state);
+      logEvent(log, 'forward_completed', {
+        noteId: note.id,
+        ...planLogFields(plan),
+        attempts: Number(job.attempts || 1),
+        published: (finalState || state).published || {},
+        media: (finalState || state).media || {},
+      });
     } catch (error) {
       // claimNextJob increments attempts before handing job to worker.
       const attempts = Number(job.attempts || 1);
       const retryable = isRetryableError(error);
       const retryAfterMs = Number(error?.retryAfterMs || 0);
       const message = errorText(error);
-      log.error(JSON.stringify({
-        scope: 'process_job',
-        id: job.id,
+      const note = safeJson(job.note_json ?? job.note, null);
+      const storedPlan = safeJson(job.plan_json ?? job.plan, null);
+      const commonFields = {
+        ...noteLogFields(note),
+        ...planLogFields(storedPlan),
+        noteId: job.id,
         attempts,
         retryable,
         message,
-      }));
+      };
       if (retryable && attempts < 5) {
+        const nextRetryAt = isoAfter(retryDelayMs(attempts, retryAfterMs));
         await jobStore.markRetry(
           job.id,
           attempts,
           message,
-          Date.parse(isoAfter(retryDelayMs(attempts, retryAfterMs))),
+          Date.parse(nextRetryAt),
           state,
         );
+        logEvent(log, 'forward_retry_scheduled', { ...commonFields, nextRetryAt });
       } else {
         await jobStore.markDead(job.id, message, state);
+        logEvent(log, 'forward_failed', { ...commonFields, final: true });
       }
     }
   }
@@ -272,11 +322,22 @@ export function createService({
     }
 
     const decision = decideWebhook(envelope, config.requiredTag);
+    logEvent(log, 'webhook_received', {
+      eventType: envelope?.type ?? null,
+      action: decision.action,
+      reason: decision.reason ?? null,
+      ...noteLogFields(decision.note),
+    });
     if (decision.action === 'invalid_note') {
       json(response, 400, { error: 'invalid_note' });
       return;
     }
     if (decision.action !== 'queue') {
+      logEvent(log, 'webhook_ignored', {
+        eventType: envelope?.type ?? null,
+        reason: decision.reason ?? null,
+        ...noteLogFields(decision.note),
+      });
       json(response, 202, { action: decision.action });
       return;
     }
@@ -288,13 +349,24 @@ export function createService({
     try {
       const result = await jobStore.insertJob(note);
       if (!result.inserted) {
+        logEvent(log, 'webhook_duplicate', {
+          ...noteLogFields(note),
+          ...planLogFields(decision.plan),
+        });
         json(response, 202, { action: 'duplicate', noteId: note.id });
         return;
       }
+      logEvent(log, 'webhook_queued', {
+        ...noteLogFields(note),
+        ...planLogFields(decision.plan),
+      });
       void drain();
       json(response, 202, { action: 'queued', noteId: note.id });
     } catch (error) {
-      log.error(JSON.stringify({ scope: 'enqueue', message: errorText(error) }));
+      logEvent(log, 'webhook_queue_failed', {
+        ...noteLogFields(note),
+        message: errorText(error),
+      }, 'error');
       json(response, 500, { error: 'queue_unavailable' });
     }
   }
@@ -335,7 +407,7 @@ export function createService({
       }
       json(response, 404, { error: 'not_found' });
     } catch (error) {
-      log.error(JSON.stringify({ scope: 'http', message: errorText(error) }));
+      logEvent(log, 'http_error', { message: errorText(error) }, 'error');
       if (!response.headersSent) json(response, 500, { error: 'internal_error' });
       else response.destroy();
     }
@@ -376,7 +448,7 @@ export async function startServer(options = {}) {
   await new Promise((resolve) => server.listen(service.config.port, resolve));
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : service.config.port;
-  (options.logger || console).info(`misskey-to-x listening on ${port}`);
+  logEvent(options.logger || console, 'server_started', { port });
 
   const shutdown = async () => {
     server.close();

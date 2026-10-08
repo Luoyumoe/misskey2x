@@ -20,6 +20,7 @@ test('SQLite queue deduplicates, claims, persists state and retries', () => {
 
 test('Rettiwt publisher uploads media and chains replies', async () => {
   const calls = [];
+  const logs = [];
   let mediaCounter = 0;
   let tweetCounter = 0;
   const publisher = createPublisher({
@@ -36,6 +37,7 @@ test('Rettiwt publisher uploads media and chains replies', async () => {
       },
     },
     mediaFetcher: async () => ({ bytes: new Uint8Array([1, 2, 3]) }),
+    logger: { info(line) { logs.push(JSON.parse(line)); }, warn(line) { logs.push(JSON.parse(line)); } },
   });
   const state = await publisher.publishPlan({
     units: [
@@ -48,6 +50,12 @@ test('Rettiwt publisher uploads media and chains replies', async () => {
   assert.equal(calls[0][0], 'upload');
   assert.deepEqual(calls[1][1].media, [{ id: 'media-1' }]);
   assert.equal(calls[2][1].replyTo, 'tweet-1');
+  assert.deepEqual(
+    logs.filter((entry) => entry.event).map((entry) => entry.event),
+    ['x_publish_started', 'x_media_upload_started', 'x_media_uploaded', 'x_publish_completed', 'x_publish_started', 'x_publish_completed'],
+  );
+  assert.equal(logs.find((entry) => entry.event === 'x_publish_started').text, 'first');
+  assert.equal(logs.find((entry) => entry.event === 'x_publish_completed').tweetId, 'tweet-1');
 });
 
 test('Rettiwt errors classify transient statuses', () => {
