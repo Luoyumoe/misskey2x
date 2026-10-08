@@ -1,0 +1,18 @@
+{
+  "name": "misskey-to-x",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Asynchronously mirror tagged Misskey notes to X with Rettiwt-API.",
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "check": "node --check src/db.js && node --check src/media.js && node --check src/misskey.js && node --check src/server.js && node --check src/x.js"
+  },
+  "dependencies": {
+    "rettiwt-api": "7.1.4"
+  }
+}

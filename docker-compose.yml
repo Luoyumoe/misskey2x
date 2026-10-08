@@ -1,0 +1,26 @@
+services:
+  app:
+    build: .
+    environment:
+      API_KEY: ${API_KEY:-}
+      MISSKEY_WEBHOOK_SECRET: ${MISSKEY_WEBHOOK_SECRET:-}
+      REQUIRED_TAG: ${REQUIRED_TAG:-to_x}
+      PORT: ${PORT:-3000}
+      DATABASE_PATH: ${DATABASE_PATH:-/data/misskey-to-x.sqlite}
+      MEDIA_ALLOWED_HOSTS: ${MEDIA_ALLOWED_HOSTS:-}
+      RETTIWT_LOGGING: ${RETTIWT_LOGGING:-false}
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    volumes:
+      - misskey_to_x_data:/data
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "const p = process.env.PORT || 3000; fetch('http://127.0.0.1:' + p + '/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  misskey_to_x_data:
