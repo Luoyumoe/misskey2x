@@ -12,6 +12,7 @@ export const SUPPORTED_IMAGE_TYPES = Object.freeze(['image/jpeg', 'image/png', '
 
 const URL_PATTERN = /https?:\/\/[^\s<>"']+/giu;
 const URL_TRAILING_PUNCTUATION = /[.,!?;:)}\]>]+$/u;
+const CUSTOM_EMOJI_SHORTCODE_PATTERN = /:[A-Za-z0-9_+-]+:/gu;
 
 function isObject(value) {
   return value !== null && typeof value === 'object';
@@ -154,6 +155,50 @@ export function removeControlTag(text, requiredTag = DEFAULT_REQUIRED_TAG) {
   return output.trim();
 }
 
+/**
+ * Remove Misskey custom emoji shortcodes such as `:lty_9th_09:`.
+ *
+ * Unicode emoji are not matched. URL spans stay untouched so a URL containing
+ * colon-delimited text is forwarded exactly as written.
+ */
+export function removeCustomEmojiShortcodes(text) {
+  if (isObject(text)) {
+    return { ...text, text: removeCustomEmojiShortcodes(text.text ?? '') };
+  }
+  if (typeof text !== 'string' || text.length === 0) return '';
+
+  let cursor = 0;
+  let output = '';
+  for (const match of text.matchAll(URL_PATTERN)) {
+    const start = match.index ?? 0;
+    const url = match[0];
+    output += replaceCustomEmojiInPlainText(text.slice(cursor, start));
+    output += url;
+    cursor = start + url.length;
+  }
+  output += replaceCustomEmojiInPlainText(text.slice(cursor));
+  return output.trim();
+}
+
+function replaceCustomEmojiInPlainText(text) {
+  let cursor = 0;
+  let output = '';
+  for (const match of text.matchAll(CUSTOM_EMOJI_SHORTCODE_PATTERN)) {
+    const start = match.index ?? 0;
+    output += text.slice(cursor, start);
+
+    // If shortcode is surrounded by whitespace, remove one side to avoid
+    // leaving a doubled space or blank line after deletion.
+    const previous = output[output.length - 1];
+    const next = text[start + match[0].length];
+    if (/\s/u.test(previous || '') && /\s/u.test(next || '')) {
+      output = output.slice(0, -1);
+    }
+    cursor = start + match[0].length;
+  }
+  return output + text.slice(cursor);
+}
+
 function replaceControlTagInPlainText(text, tag) {
   const escaped = tag.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
   return text.replace(
@@ -268,9 +313,12 @@ export function buildSyncPlan(note, { requiredTag = DEFAULT_REQUIRED_TAG } = {})
   if (isNonOriginalNote(note)) return { accepted: false, reason: 'not_original' };
   if (!hasRequiredTag(note, requiredTag)) return { accepted: false, reason: 'missing_tag' };
 
-  const cleanText = removeControlTag(note.text ?? '', requiredTag);
-  const withWarning = typeof note.cw === 'string' && note.cw.trim()
-    ? `CW: ${note.cw.trim()}${cleanText ? `\n\n${cleanText}` : ''}`
+  const cleanText = removeCustomEmojiShortcodes(removeControlTag(note.text ?? '', requiredTag));
+  const cleanCw = typeof note.cw === 'string'
+    ? removeCustomEmojiShortcodes(note.cw.trim())
+    : '';
+  const withWarning = cleanCw
+    ? `CW: ${cleanCw}${cleanText ? `\n\n${cleanText}` : ''}`
     : cleanText;
   const chunks = splitXText(withWarning);
   const groups = mediaGroups(note.files);

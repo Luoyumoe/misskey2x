@@ -7,6 +7,7 @@ import {
   decideWebhook,
   normalizeControlTag,
   parseWebhook,
+  removeCustomEmojiShortcodes,
   removeControlTag,
   splitXText,
   weightedLength,
@@ -49,6 +50,40 @@ test('control tag removed, other tags and URL fragments preserved; CW prefixed',
   assert.equal(plan.text, 'CW: sensitive\n\nhello  #other https://x.test/#to_x');
   assert.equal(plan.units.length, 1);
   assert.deepEqual(plan.units[0].files, []);
+});
+
+test('Misskey custom emoji shortcodes are removed while Unicode emoji stay', () => {
+  const text = 'hello :lty_9th_09: 😀 👨‍👩‍👧‍👦';
+  assert.equal(removeCustomEmojiShortcodes(text), 'hello 😀 👨‍👩‍👧‍👦');
+  assert.equal(removeCustomEmojiShortcodes('one :first: :second: two'), 'one two');
+  assert.equal(removeCustomEmojiShortcodes('hello:lty_9th_09:world'), 'helloworld');
+  assert.equal(
+    removeCustomEmojiShortcodes('URL https://example.test/:keep_me: and :remove-me:'),
+    'URL https://example.test/:keep_me: and',
+  );
+});
+
+test('custom emoji and control tag are both removed from X text', () => {
+  const plan = buildSyncPlan({
+    id: 'n-custom-emoji',
+    text: '#to_x:lty_9th_09: hello #other 😀',
+    cw: ':warning: sensitive',
+  });
+  assert.equal(plan.accepted, true);
+  assert.equal(plan.text, 'CW: sensitive\n\nhello #other 😀');
+  assert.deepEqual(plan.units, [{ text: 'CW: sensitive\n\nhello #other 😀', files: [] }]);
+});
+
+test('a note containing only filtered custom emoji still publishes media', () => {
+  const files = [{ id: 'f-custom', url: 'https://media.example/f.png', type: 'image/png' }];
+  const plan = buildSyncPlan({
+    id: 'n-custom-media',
+    text: '#to_x :lty_9th_09:',
+    tags: ['to_x'],
+    files,
+  });
+  assert.equal(plan.accepted, true);
+  assert.deepEqual(plan.units, [{ text: '', files }]);
 });
 
 test('X weighted length counts URL as 23 and CJK/emoji as 2', () => {

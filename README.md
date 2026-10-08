@@ -85,6 +85,7 @@ command curl \
 ## 同步规则
 
 - `REQUIRED_TAG` 是同步开关，默认 `to_x`，比较不区分大小写；控制标签不会出现在 X 正文。
+- Misskey 自定义表情短码（例如 `:lty_9th_09:`）不会发布到 X；Unicode emoji 会保留。
 - `#no_to_x` 没有特殊语义。
 - 回复、引用、Renote 跳过；URL 中的标签不会触发同步。
 - `cw` 会变成 `CW: ...` 前缀；长文会按 X 加权长度拆分为回复串。
