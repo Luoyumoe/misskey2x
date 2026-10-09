@@ -243,14 +243,17 @@ export function createService({
       const retryAfterMs = Number(error?.retryAfterMs || 0);
       const message = errorText(error);
       const note = safeJson(job.note_json ?? job.note, null);
-      const storedPlan = safeJson(job.plan_json ?? job.plan, null);
       const commonFields = {
         ...noteLogFields(note),
-        ...planLogFields(storedPlan),
+        ...planLogFields(plan),
         noteId: job.id,
         attempts,
         retryable,
         message,
+        causeName: error?.cause?.name ?? null,
+        errorCode: error?.code ?? error?.cause?.code ?? null,
+        httpStatus: error?.status ?? error?.cause?.status ?? error?.cause?.response?.status ?? null,
+        errorDetails: error?.details ?? null,
       };
       if (retryable && attempts < 5) {
         const nextRetryAt = isoAfter(retryDelayMs(attempts, retryAfterMs));

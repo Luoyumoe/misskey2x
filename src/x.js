@@ -4,8 +4,10 @@ import { logEvent } from './log.js';
 const RETRYABLE_CODES = new Set([
   'ECONNRESET',
   'ECONNREFUSED',
+  'ECONNABORTED',
   'ETIMEDOUT',
   'EAI_AGAIN',
+  'ERR_NETWORK',
   'UND_ERR_CONNECT_TIMEOUT',
   'UND_ERR_HEADERS_TIMEOUT',
   'UND_ERR_BODY_TIMEOUT',
@@ -13,16 +15,54 @@ const RETRYABLE_CODES = new Set([
 ]);
 
 export class RettiwtError extends Error {
-  constructor(message, { status, retryable, cause } = {}) {
+  constructor(message, { status, retryable, code, details, cause } = {}) {
     super(message, cause ? { cause } : undefined);
     this.name = 'RettiwtError';
     this.status = Number.isFinite(Number(status)) ? Number(status) : undefined;
-    this.retryable = retryable ?? isRetryableError({ status: this.status, cause });
+    this.code = code ?? cause?.code;
+    this.details = details;
+    this.retryable = retryable ?? isRetryableError({ status: this.status, code: this.code, cause });
   }
 }
 
 function errorStatus(error) {
-  return Number(error?.status ?? error?.response?.status ?? error?.cause?.status);
+  return Number(
+    error?.status ??
+    error?.response?.status ??
+    error?.cause?.status ??
+    error?.cause?.response?.status,
+  );
+}
+
+function errorDetails(error) {
+  const details = [
+    error?.details,
+    error?.response?.data?.errors,
+    error?.cause?.details,
+    error?.cause?.response?.data?.errors,
+  ].find(Array.isArray);
+  if (!details) return undefined;
+  return details.slice(0, 10).map((item) => ({
+    ...(item?.code != null ? { code: String(item.code).slice(0, 100) } : {}),
+    ...(item?.type != null ? { type: String(item.type).slice(0, 100) } : {}),
+    message: String(item?.message ?? '').slice(0, 500),
+  }));
+}
+
+function diagnosticMessage(error, status, code, details) {
+  const message = String(error?.message || error || 'Unknown error');
+  const context = [];
+  if (Number.isFinite(status)) context.push(`HTTP ${status}`);
+  if (code) context.push(`code ${code}`);
+  if (error?.isAxiosError && !error.response) context.push('no HTTP response');
+  if (details?.length) {
+    const summary = details
+      .map((item) => [item.code, item.message].filter(Boolean).join(': '))
+      .filter(Boolean)
+      .join(' | ');
+    if (summary) context.push(`X errors: ${summary}`);
+  }
+  return context.length ? `${message} (${context.join('; ')})` : message;
 }
 
 export function isRetryableError(error) {
@@ -64,16 +104,28 @@ async function loadRettiwt(apiKey, logging) {
   const module = await import('rettiwt-api');
   const Rettiwt = module.Rettiwt || module.default?.Rettiwt || module.default;
   if (typeof Rettiwt !== 'function') throw new Error('Rettiwt-API export Rettiwt not found');
-  return new Rettiwt({ apiKey, logging });
+  return new Rettiwt({
+    apiKey,
+    logging,
+    errorHandler: {
+      handle(error) {
+        throw error;
+      },
+    },
+  });
 }
 
 function wrapError(error) {
   if (error instanceof RettiwtError) return error;
   const status = errorStatus(error);
-  const message = error?.message || String(error);
+  const code = error?.code ?? error?.cause?.code;
+  const details = errorDetails(error);
+  const message = diagnosticMessage(error, status, code, details);
   return new RettiwtError(message, {
     status: Number.isFinite(status) ? status : undefined,
     retryable: isRetryableError(error),
+    code,
+    details,
     cause: error,
   });
 }
