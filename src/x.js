@@ -182,9 +182,17 @@ export function createPublisher({
     state.media ||= {};
     const units = Array.isArray(plan?.units) ? plan.units : [];
     let previousId = plan?.replyTo ? String(plan.replyTo) : undefined;
+    let stateSaveQueue = Promise.resolve();
 
-    // Upload and post each unit in order. Persist after every side effect so a
-    // retry never needs to repeat an already successful upload or post.
+    function persistState() {
+      if (typeof saveState !== 'function') return Promise.resolve();
+      const snapshot = structuredClone(state);
+      stateSaveQueue = stateSaveQueue.then(() => saveState(snapshot));
+      return stateSaveQueue;
+    }
+
+    // Process units in order and upload each unit's media concurrently. Persist
+    // after every side effect so retries never repeat successful uploads/posts.
     for (let unitIndex = 0; unitIndex < units.length; unitIndex += 1) {
       const unit = units[unitIndex] || {};
       if (state.published[unitIndex]) {
@@ -208,15 +216,17 @@ export function createPublisher({
         mediaCount: files.length,
         replyTo: replyTo ? String(replyTo) : null,
       });
-      for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
-        const file = files[fileIndex];
+      const uploadResults = await Promise.allSettled(files.map(async (file, fileIndex) => {
         const declaredType = String(file?.type || file?.mimeType || '').toLowerCase().split(';', 1)[0];
-        if (declaredType && !SUPPORTED_MEDIA_TYPES.includes(declaredType)) continue;
+        if (declaredType && !SUPPORTED_MEDIA_TYPES.includes(declaredType)) return null;
         const isBinary = file instanceof ArrayBuffer || ArrayBuffer.isView(file);
-        if (!file || (typeof file !== 'string' && !isBinary && !file.url && !file.bytes && !file.data && !file.buffer)) continue;
+        if (
+          !file ||
+          (typeof file !== 'string' && !isBinary && !file.url && !file.bytes && !file.data && !file.buffer)
+        ) return null;
         const key = mediaKey(file, unitIndex, fileIndex);
         const existing = state.media[key];
-        if (existing?.skipped) continue;
+        if (existing?.skipped) return null;
         let id = typeof existing === 'string' ? existing : existing?.id;
         if (!id) {
           logEvent(logger, 'x_media_upload_started', {
@@ -233,7 +243,7 @@ export function createPublisher({
             // Rettiwt failures remain retryable and surface to queue worker.
             if (error.mediaSkip) {
               state.media[key] = { skipped: true, error: String(error.message || error).slice(0, 500) };
-              if (typeof saveState === 'function') await saveState(state);
+              await persistState();
               logEvent(logger, 'x_media_skipped', {
                 noteId: plan?.noteId ?? null,
                 unitIndex,
@@ -241,21 +251,26 @@ export function createPublisher({
                 mediaKey: key,
                 message: String(error.message || error),
               }, 'warn');
-              continue;
+              return null;
             }
-            throw wrapError(error);
+            throw error;
           }
+          state.media[key] = id;
+          logEvent(logger, 'x_media_uploaded', {
+            noteId: plan?.noteId ?? null,
+            unitIndex,
+            fileIndex,
+            mediaKey: key,
+            mediaId: id,
+          });
+          await persistState();
         }
-        state.media[key] = id;
-        mediaIds.push({ id });
-        logEvent(logger, 'x_media_uploaded', {
-          noteId: plan?.noteId ?? null,
-          unitIndex,
-          fileIndex,
-          mediaKey: key,
-          mediaId: id,
-        });
-        if (typeof saveState === 'function') await saveState(state);
+        return id ? { id } : null;
+      }));
+      const failedUpload = uploadResults.find((result) => result.status === 'rejected');
+      if (failedUpload) throw wrapError(failedUpload.reason);
+      for (const result of uploadResults) {
+        if (result.status === 'fulfilled' && result.value) mediaIds.push(result.value);
       }
 
       const options = { text: String(unit.text ?? '') };
@@ -279,7 +294,7 @@ export function createPublisher({
         replyTo: replyTo ? String(replyTo) : null,
         tweetId: id,
       });
-      if (typeof saveState === 'function') await saveState(state);
+      await persistState();
     }
     return state;
   }
